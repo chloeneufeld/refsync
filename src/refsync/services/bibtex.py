@@ -3,9 +3,11 @@ BibTeX generation and management service.
 """
 
 import re
+import unicodedata
 from typing import Optional
 
 from ..models import Paper
+from .latex import latex_to_text
 
 
 def _paper_year(paper: Paper) -> Optional[int]:
@@ -15,10 +17,146 @@ def _paper_year(paper: Paper) -> Optional[int]:
     return None
 
 
+# === Author name handling ===
+
+# Name suffixes, compared lowercased with trailing "." / "," removed
+_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md"}
+
+# Letters that Unicode NFKD can't decompose into ASCII + combining accent
+_ASCII_FOLD = str.maketrans(
+    {
+        "ø": "o",
+        "Ø": "O",
+        "ł": "l",
+        "Ł": "L",
+        "ß": "ss",
+        "æ": "ae",
+        "Æ": "AE",
+        "œ": "oe",
+        "Œ": "OE",
+        "đ": "d",
+        "Đ": "D",
+        "ð": "d",
+        "Ð": "D",
+        "þ": "th",
+        "Þ": "Th",
+        "ı": "i",
+    }
+)
+
+
+def _is_suffix(token: str) -> bool:
+    return token.lower().rstrip(".,") in _SUFFIXES
+
+
+def _starts_lowercase(word: str) -> bool:
+    """BibTeX's von test: is the word's first letter lowercase?"""
+    for ch in word:
+        if ch.isalpha():
+            return ch.islower()
+    return False
+
+
+def _clean_name(name: str) -> str:
+    """Turn LaTeX-escaped names (e.g. 'Kere{\\v{s}}') into plain Unicode."""
+    name = name.strip()
+    if "\\" in name or "{" in name:
+        name = latex_to_text(name)
+    name = name.replace("{", "").replace("}", "")
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def _split_space_form(name: str) -> tuple[str, str, str]:
+    """Split 'First von Last [Jr.]' into (first, von+last, suffix)."""
+    tokens = name.split()
+    suffix_tokens = []
+    while len(tokens) > 1 and _is_suffix(tokens[-1]):
+        suffix_tokens.insert(0, tokens.pop().rstrip(","))
+    tokens = [t.rstrip(",") for t in tokens]
+    suffix = " ".join(suffix_tokens)
+
+    if not tokens:
+        return "", "", suffix
+    if len(tokens) == 1:
+        return "", tokens[0], suffix
+
+    # BibTeX von rule: the von part starts at the first lowercase word, and the
+    # last word always belongs to Last. Everything from the first particle on is
+    # the surname: "Pieter van Dokkum" -> ("Pieter", "van Dokkum").
+    for i, tok in enumerate(tokens[:-1]):
+        if _starts_lowercase(tok):
+            return " ".join(tokens[:i]), " ".join(tokens[i:]), suffix
+    return " ".join(tokens[:-1]), tokens[-1], suffix
+
+
+def _split_name(name: str) -> tuple[str, str, str]:
+    """
+    Split an author name into (first, last, suffix), keeping lowercase
+    particles with the surname. Handles both name orders:
+
+        "Pieter van Dokkum"         -> ("Pieter", "van Dokkum", "")
+        "van Dokkum, Pieter G."     -> ("Pieter G.", "van Dokkum", "")
+        "Arjen van der Wel"         -> ("Arjen", "van der Wel", "")
+        "John Smith Jr."            -> ("John", "Smith", "Jr.")
+        "Smith, Jr., John"          -> ("John", "Smith", "Jr.")   (BibTeX order)
+        "Smith, John, Jr."          -> ("John", "Smith", "Jr.")
+
+    LaTeX escapes are converted to Unicode first. Returns ("", "", "") for an
+    empty name.
+    """
+    name = _clean_name(name or "")
+    if not name:
+        return "", "", ""
+
+    if "," not in name:
+        return _split_space_form(name)
+
+    parts = [p.strip() for p in name.split(",") if p.strip()]
+    if len(parts) == 1:
+        return _split_space_form(parts[0])
+    if len(parts) == 2:
+        if _is_suffix(parts[1]):
+            # "John Smith, Jr." -- the comma only sets off the suffix
+            first, last, _ = _split_space_form(parts[0])
+            return first, last, parts[1]
+        return parts[1], parts[0], ""
+
+    # Three or more parts: "Last, Jr, First" (BibTeX) or "Last, First, Jr"
+    a, b = parts[1], parts[2]
+    if _is_suffix(b) and not _is_suffix(a):
+        return a, parts[0], b
+    return b, parts[0], a
+
+
+def _to_ascii(text: str) -> str:
+    """Drop accents and fold special letters: 'Kereš' -> 'Keres', 'Bjørn' -> 'Bjorn'."""
+    text = text.translate(_ASCII_FOLD)
+    text = unicodedata.normalize("NFKD", text)
+    return text.encode("ascii", "ignore").decode("ascii")
+
+
+def surname_slug(name: str) -> str:
+    """
+    ASCII-only, space-free surname for cite keys and filenames.
+
+        "Pieter van Dokkum"            -> "van_Dokkum"
+        "Claude-André Faucher-Giguère" -> "Faucher-Giguere"
+        "Kereš, Dušan"                 -> "Keres"
+    """
+    _, last, _ = _split_name(name)
+    slug = _to_ascii(last)
+    slug = re.sub(r"\s+", "_", slug.strip())
+    slug = re.sub(r"[^A-Za-z0-9_-]", "", slug)
+    return slug or "Unknown"
+
+
 def generate_cite_key(paper: Paper, existing_keys: Optional[set[str]] = None) -> str:
     """
     Generate a cite key in format LastName:Year (e.g., McCallum:2025).
-    Handles duplicates with a, b, c suffixes.
+
+    Keys are ASCII-only with particles kept and spaces replaced
+    (van_Dokkum:2026, Faucher-Giguere:2023). Handles duplicates with
+    a, b, c suffixes.
 
     Args:
         paper: Paper to generate key for
@@ -29,26 +167,7 @@ def generate_cite_key(paper: Paper, existing_keys: Optional[set[str]] = None) ->
     """
     existing_keys = existing_keys or set()
 
-    # Extract first author's last name
-    if paper.authors:
-        first_author = paper.authors[0]
-        # Handle formats like "John Smith" or "Smith, John"
-        if "," in first_author:
-            last_name = first_author.split(",")[0].strip()
-        else:
-            parts = first_author.strip().split()
-            # Skip suffixes like Jr., III, etc.
-            suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "phd", "md"}
-            last_name = parts[-1] if parts else "Unknown"
-            for i in range(len(parts) - 1, -1, -1):
-                if parts[i].lower().rstrip(".") not in suffixes:
-                    last_name = parts[i]
-                    break
-    else:
-        last_name = "Unknown"
-
-    # Clean the last name (remove special characters, keep accents)
-    last_name = re.sub(r"[^\w\s-]", "", last_name).strip()
+    last_name = surname_slug(paper.authors[0]) if paper.authors else "Unknown"
 
     # Get year from published date (may be missing for sparse ADS records)
     year = _paper_year(paper)
@@ -69,30 +188,26 @@ def generate_cite_key(paper: Paper, existing_keys: Optional[set[str]] = None) ->
 
     # Fallback: append a stable disambiguator from whatever identifier we have.
     tail = paper.arxiv_id or paper.bibcode or paper.id
-    tail = tail.replace(".", "_").replace("/", "_")
+    tail = re.sub(r"[^A-Za-z0-9_-]", "_", tail)
     return f"{base_key}_{tail}"
 
 
 def format_authors_bibtex(authors: list[str]) -> str:
     """
-    Format author list for BibTeX.
-    Converts "First Last" to "{Last}, First" format and joins with " and ".
+    Format author list for BibTeX: "{von Last}, First" (or "{Last}, Jr., First"),
+    joined with " and ". Names keep their accents; only cite keys are ASCII-folded.
     """
     formatted = []
     for author in authors:
-        author = author.strip()
-        if "," in author:
-            # Already in "Last, First" format
-            formatted.append(f"{{{author}}}")
-        else:
-            parts = author.split()
-            if len(parts) >= 2:
-                # Assume last word is last name (simplified)
-                last = parts[-1]
-                first = " ".join(parts[:-1])
-                formatted.append(f"{{{last}}}, {first}")
-            else:
-                formatted.append(f"{{{author}}}")
+        first, last, suffix = _split_name(author)
+        if not last:
+            continue
+        entry = f"{{{last}}}"
+        if suffix:
+            entry += f", {suffix}"
+        if first:
+            entry += f", {first}"
+        formatted.append(entry)
 
     return " and ".join(formatted)
 
@@ -217,4 +332,5 @@ def parse_bibtex_for_publication_status(bibtex: str) -> dict:
 def update_cite_key_in_bibtex(bibtex: str, new_key: str) -> str:
     """Replace the cite key in a BibTeX entry."""
     # Match @TYPE{oldkey, and replace with @TYPE{newkey,
-    return re.sub(r"(@\w+\s*\{)\s*[^,]+,", rf"\1{new_key},", bibtex, count=1)
+    # (lambda avoids re treating backslashes in the key as escapes)
+    return re.sub(r"(@\w+\s*\{)\s*[^,]+,", lambda m: f"{m.group(1)}{new_key},", bibtex, count=1)

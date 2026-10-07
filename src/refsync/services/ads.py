@@ -16,11 +16,35 @@ from .settings_service import get_ads_api_key
 
 ADS_API_BASE = "https://api.adsabs.harvard.edu/v1"
 
+# Fields requested when matching library papers against ADS records
+_SYNC_FIELDS = "bibcode,alternate_bibcode,doi,pub,volume,page,year,doctype,identifier,title,author"
+
+# Identifiers per ADS query. Lookups go out as GET requests, so this keeps the
+# URL a sane length for large libraries.
+_QUERY_CHUNK = 50
+
 
 class ADSError(Exception):
     """Error from ADS API"""
 
     pass
+
+
+def _base_arxiv_id(arxiv_id: str) -> str:
+    """Strip an 'arXiv:' prefix and version suffix: 'arXiv:2301.07041v2' -> '2301.07041'.
+
+    Uses a trailing-version regex rather than split("v"), which would mangle
+    old-style ids whose archive name contains a 'v' (e.g. 'solv-int/9901001').
+    """
+    aid = arxiv_id.strip()
+    if aid.lower().startswith("arxiv:"):
+        aid = aid.split(":", 1)[1]
+    return re.sub(r"v\d+$", "", aid)
+
+
+def _chunks(items: list, size: int = _QUERY_CHUNK):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
 
 
 class ADSClient:
@@ -36,63 +60,80 @@ class ADSClient:
             "Content-Type": "application/json",
         }
 
-    async def search_by_arxiv_ids(self, arxiv_ids: list[str]) -> dict:
-        """
-        Search ADS for papers by their arXiv IDs.
-
-        Returns dict mapping arxiv_id -> ADS record (or None if not found)
-        """
-        if not arxiv_ids:
-            return {}
-
-        # Build query: identifier:(arXiv:2301.07041 OR arXiv:2302.12345 OR ...)
-        # ADS accepts arXiv IDs in the identifier field
-        id_queries = [f"arXiv:{aid}" for aid in arxiv_ids]
-        query = f"identifier:({' OR '.join(id_queries)})"
-
-        params = {
-            "q": query,
-            "fl": "bibcode,doi,pub,volume,page,year,doctype,identifier,title,author",
-            "rows": min(len(arxiv_ids), 2000),
-        }
+    async def _search(self, query: str, fl: str, rows: int) -> list[dict]:
+        """Run one /search/query request and return its docs."""
+        params = {"q": query, "fl": fl, "rows": min(max(rows, 1), 2000)}
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
                 f"{ADS_API_BASE}/search/query", params=params, headers=self.headers
             )
 
-            if response.status_code == 401:
-                raise ADSError("Invalid ADS API key")
-            elif response.status_code == 429:
-                raise ADSError("ADS rate limit exceeded. Please try again later.")
-            elif response.status_code != 200:
-                raise ADSError(f"ADS API error: {response.status_code}")
+        if response.status_code == 401:
+            raise ADSError("Invalid ADS API key")
+        elif response.status_code == 429:
+            raise ADSError("ADS rate limit exceeded. Please try again later.")
+        elif response.status_code != 200:
+            raise ADSError(f"ADS API error: {response.status_code}")
 
-            data = response.json()
+        return response.json().get("response", {}).get("docs", [])
 
-        # Map results back to arxiv IDs
-        results = {}
-        for doc in data.get("response", {}).get("docs", []):
-            # Find the arXiv ID in the identifiers
-            identifiers = doc.get("identifier", [])
-            for ident in identifiers:
-                # Identifiers come as "arXiv:2301.07041" or just the ID
-                if ident.startswith("arXiv:"):
-                    aid = ident.replace("arXiv:", "")
-                elif "." in ident and ident.replace(".", "").isdigit():
-                    # Looks like an arXiv ID (e.g., "2301.07041")
-                    aid = ident
-                else:
-                    continue
+    async def search_by_arxiv_ids(self, arxiv_ids: list[Optional[str]]) -> dict:
+        """
+        Search ADS for papers by their arXiv IDs.
 
-                # Check if this matches one of our requested IDs
-                for requested_id in arxiv_ids:
-                    # Handle version suffixes (2301.07041v1 -> 2301.07041)
-                    base_requested = requested_id.split("v")[0]
-                    base_found = aid.split("v")[0]
-                    if base_requested == base_found:
-                        results[requested_id] = doc
+        None/empty ids (ADS-only papers) are skipped.
+        Returns dict mapping each requested arxiv_id -> ADS record (missing if not found).
+        """
+        requested = [aid for aid in arxiv_ids if aid]
+        if not requested:
+            return {}
+
+        # base id -> the requested id strings that map to it (version-insensitive)
+        by_base: dict[str, list[str]] = {}
+        for aid in requested:
+            by_base.setdefault(_base_arxiv_id(aid), []).append(aid)
+
+        results: dict[str, dict] = {}
+        for chunk in _chunks(list(by_base)):
+            # identifier:("arXiv:2301.07041" OR "arXiv:astro-ph/0601234" OR ...)
+            query = "identifier:(" + " OR ".join(f'"arXiv:{b}"' for b in chunk) + ")"
+            for doc in await self._search(query, _SYNC_FIELDS, len(chunk) * 2):
+                # Identifiers come as "arXiv:2301.07041", bare ids, DOIs, bibcodes...
+                for ident in doc.get("identifier", []) or []:
+                    base = _base_arxiv_id(ident)
+                    if base in by_base:
+                        for aid in by_base[base]:
+                            results.setdefault(aid, doc)
                         break
+
+        return results
+
+    async def search_by_bibcodes(self, bibcodes: list[Optional[str]]) -> dict:
+        """
+        Search ADS for papers by bibcode (used for ADS-only papers).
+
+        Matches against each record's canonical bibcode *and* its identifiers /
+        alternate bibcodes, so a stored arXiv-style bibcode (e.g.
+        '2024arXiv240712345S') still finds the record after ADS re-keys it to the
+        journal bibcode on publication.
+
+        Returns dict mapping each requested bibcode -> ADS record (missing if not found).
+        """
+        requested = list(dict.fromkeys(b for b in bibcodes if b))
+        if not requested:
+            return {}
+
+        wanted = set(requested)
+        results: dict[str, dict] = {}
+        for chunk in _chunks(requested):
+            query = "identifier:(" + " OR ".join(f'"{b}"' for b in chunk) + ")"
+            for doc in await self._search(query, _SYNC_FIELDS, len(chunk) * 2):
+                names = {doc.get("bibcode")}
+                names.update(doc.get("identifier", []) or [])
+                names.update(doc.get("alternate_bibcode", []) or [])
+                for b in wanted & names:
+                    results.setdefault(b, doc)
 
         return results
 
@@ -201,13 +242,32 @@ class ADSClient:
         return False
 
 
+def _journal_ref(ads_record: dict) -> Optional[str]:
+    """Build 'Pub, Vol, Page' from an ADS record, or None if there's no pub."""
+    pub = ads_record.get("pub", "")
+    if not pub:
+        return None
+    vol = ads_record.get("volume", "")
+    page = (ads_record.get("page") or [""])[0]
+    ref = pub
+    if vol:
+        ref += f", {vol}"
+    if page:
+        ref += f", {page}"
+    return ref
+
+
 async def sync_papers_with_ads(papers: list, update_callback) -> dict:
     """
     Sync a list of papers with ADS to get updated citation info.
 
+    arXiv-backed papers are matched by arXiv id; ADS-only papers (arxiv_id is
+    None) are matched by their stored bibcode.
+
     Args:
         papers: List of Paper objects to sync
-        update_callback: Async function(arxiv_id, updates_dict) to save updates
+        update_callback: Async function(paper_id, updates_dict) to save updates,
+            keyed on the internal `Paper.id`.
 
     Returns:
         Dict with sync statistics
@@ -221,26 +281,35 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
 
     client = ADSClient(api_key)
 
-    # Get arXiv IDs
-    arxiv_ids = [p.arxiv_id for p in papers if p.arxiv_id]
+    arxiv_papers = [p for p in papers if p.arxiv_id]
+    ads_only_papers = [p for p in papers if not p.arxiv_id and p.bibcode]
 
-    stats = {"synced": 0, "published": 0, "unchanged": 0, "not_found": 0, "errors": 0}
+    stats = {
+        "synced": 0,
+        "published": 0,
+        "unchanged": 0,
+        "not_found": 0,
+        # Papers with neither an arXiv id nor a bibcode can't be looked up
+        "skipped": len(papers) - len(arxiv_papers) - len(ads_only_papers),
+        "errors": 0,
+    }
 
     try:
-        # Step 1: Search for all papers in ADS
-        ads_records = await client.search_by_arxiv_ids(arxiv_ids)
+        # Step 1: Find every paper in ADS
+        arxiv_records = await client.search_by_arxiv_ids([p.arxiv_id for p in arxiv_papers])
+        bibcode_records = await client.search_by_bibcodes([p.bibcode for p in ads_only_papers])
+
+        matched: list[tuple[Paper, Optional[dict]]] = [
+            (p, arxiv_records.get(p.arxiv_id)) for p in arxiv_papers
+        ] + [(p, bibcode_records.get(p.bibcode)) for p in ads_only_papers]
 
         # Step 2: Get BibTeX for papers that were found
-        bibcodes = [rec["bibcode"] for rec in ads_records.values() if rec]
-        bibtex_map = {}
-        if bibcodes:
-            bibtex_map = await client.get_bibtex(bibcodes)
+        bibcodes = sorted({rec["bibcode"] for _, rec in matched if rec and rec.get("bibcode")})
+        bibtex_map = await client.get_bibtex(bibcodes) if bibcodes else {}
 
-        # Step 3: Update each paper
-        for paper in papers:
+        # Step 3: Update each paper (always keyed on the internal id)
+        for paper, ads_record in matched:
             try:
-                ads_record = ads_records.get(paper.arxiv_id)
-
                 if not ads_record:
                     stats["not_found"] += 1
                     # Still mark as synced even if not in ADS
@@ -260,6 +329,11 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
                     "last_citation_sync": datetime.utcnow().isoformat(),
                 }
 
+                # ADS-only papers: keep the abstract link pointing at the current
+                # canonical bibcode (it changes when an eprint gets published)
+                if not paper.arxiv_id and bibcode and bibcode != paper.bibcode:
+                    updates["ads_url"] = ads_abstract_url(bibcode)
+
                 # Add DOI if available
                 doi = ads_record.get("doi")
                 if doi:
@@ -269,22 +343,13 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
 
                 # Add journal ref if published
                 if is_pub:
-                    pub = ads_record.get("pub", "")
-                    vol = ads_record.get("volume", "")
-                    page = ads_record.get("page", [""])[0] if ads_record.get("page") else ""
-                    if pub:
-                        journal_ref = pub
-                        if vol:
-                            journal_ref += f", {vol}"
-                        if page:
-                            journal_ref += f", {page}"
+                    journal_ref = _journal_ref(ads_record)
+                    if journal_ref:
                         updates["journal_ref"] = journal_ref
 
                 # Update BibTeX if we got one from ADS
                 if bibtex:
                     # Replace the cite key with our format (LastName:Year)
-                    from .bibtex import update_cite_key_in_bibtex
-
                     if paper.cite_key:
                         bibtex = update_cite_key_in_bibtex(bibtex, paper.cite_key)
                     updates["bibtex"] = bibtex
@@ -297,7 +362,7 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
                     stats["published"] += 1
 
             except Exception as e:
-                print(f"Error syncing {paper.arxiv_id}: {e}")
+                print(f"Error syncing {paper.id}: {e}")
                 stats["errors"] += 1
 
     except ADSError:
@@ -388,17 +453,7 @@ async def fetch_ads_paper(bibcode: str) -> "Paper":
     is_pub = client.is_published(doc)
 
     # Build a journal_ref string if published
-    journal_ref = None
-    if is_pub:
-        pub = doc.get("pub", "")
-        vol = doc.get("volume", "")
-        page = (doc.get("page", [""]) or [""])[0]
-        if pub:
-            journal_ref = pub
-            if vol:
-                journal_ref += f", {vol}"
-            if page:
-                journal_ref += f", {page}"
+    journal_ref = _journal_ref(doc) if is_pub else None
 
     paper = Paper(
         id=make_paper_id(bibcode=resolved_bibcode),
@@ -420,7 +475,7 @@ async def fetch_ads_paper(bibcode: str) -> "Paper":
         is_published=is_pub,
     )
 
-    # Cite key + BibTeX
+    # Cite key + BibTeX (the add-paper route re-checks the key against the library)
     paper.cite_key = generate_cite_key(paper)
     if bibtex:
         if paper.cite_key:

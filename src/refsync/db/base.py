@@ -57,6 +57,11 @@ class PaperRepository(ABC):
         """Set cover image path for a paper"""
         pass
 
+    @abstractmethod
+    async def cite_keys(self) -> set[str]:
+        """All cite keys currently in the library"""
+        pass
+
 
 class ShelfRepository(ABC):
     """Abstract interface for shelf storage"""

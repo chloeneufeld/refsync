@@ -358,6 +358,12 @@ class SQLitePaperRepository(PaperRepository):
         await self.db.conn.commit()
         return await self.get(id)
 
+    async def cite_keys(self) -> set[str]:
+        async with self.db.conn.execute(
+            "SELECT cite_key FROM papers WHERE cite_key IS NOT NULL AND cite_key != ''"
+        ) as cursor:
+            return {row[0] for row in await cursor.fetchall()}
+
 
 class SQLiteShelfRepository(ShelfRepository):
     """SQLite implementation of shelf repository"""

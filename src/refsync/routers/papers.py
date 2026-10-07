@@ -9,6 +9,7 @@ from ..db import PaperRepository
 from ..models import Paper, PaperCreate, PaperUpdate, SearchQuery, SearchResult
 from ..services import ArxivAPIError  # kept for compatibility
 from ..services.ads import ADSError
+from ..services.bibtex import generate_cite_key, update_cite_key_in_bibtex
 from ..services.resolve import ResolveError, resolve_paper
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
@@ -50,6 +51,14 @@ async def add_paper(data: PaperCreate, repo: PaperRepository = Depends(get_paper
             status_code=409,
             detail={"message": "Paper already in library", "id": paper.id},
         )
+
+    # The fetchers generate a cite key without seeing the library; make sure a
+    # second "Smith:2024" becomes "Smith:2024a" instead of colliding.
+    cite_key = generate_cite_key(paper, await repo.cite_keys())
+    if cite_key != paper.cite_key:
+        paper.cite_key = cite_key
+        if paper.bibtex:
+            paper.bibtex = update_cite_key_in_bibtex(paper.bibtex, cite_key)
 
     return await repo.create(paper)
 
