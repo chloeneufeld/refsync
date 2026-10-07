@@ -1,0 +1,1288 @@
+{% extends "base.html" %}
+
+{% block title %}Library - arXiv Library{% endblock %}
+{% block nav_library %}font-medium text-gray-900{% endblock %}
+
+{% block content %}
+<div x-data="library()" x-init="init()">
+    
+    <!-- Search and Filters Bar -->
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 mb-6">
+        <div class="flex flex-col md:flex-row gap-4">
+            <!-- Search Input -->
+            <div class="flex-1 relative">
+                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <input type="text"
+                       x-model="searchQuery"
+                       @input="filterPapers()"
+                       placeholder="Search titles, abstracts, authors, notes..."
+                       class="w-full pl-10 pr-4 py-2 border border-gray-200 dark:border-gray-600 rounded-lg text-sm
+                              bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100
+                              placeholder:text-gray-400 dark:placeholder:text-gray-500
+                              focus:outline-none focus:ring-2 focus:ring-arxiv-red/20 focus:border-arxiv-red">
+            </div>
+            
+            <!-- Filter Toggles -->
+            <div class="flex gap-2 flex-wrap">
+                <!-- Starred Filter -->
+                <button @click="filterStarred = !filterStarred; filterPapers()"
+                        :class="filterStarred ? 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-400' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300'"
+                        class="px-3 py-2 border rounded-lg text-sm flex items-center gap-1.5 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <svg class="w-4 h-4" :class="filterStarred ? 'text-yellow-500' : 'text-gray-400'" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                    </svg>
+                    <span>Starred</span>
+                </button>
+                
+                <!-- Shelf Filter -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="px-3 py-2 border border-gray-200 dark:border-gray-600 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
+                        <span>Shelf</span>
+                        <span x-show="filterShelf" class="bg-arxiv-red text-white text-xs px-1.5 rounded">1</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </button>
+                    <div x-show="open" x-cloak @click.away="if (!editingShelfId) open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[220px] z-10">
+                        <button @click="filterShelf = null; filterPapers(); open = false"
+                                class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                                :class="{ 'text-arxiv-red': filterShelf === null }">
+                            All Shelves
+                        </button>
+                        <button @click="filterShelf = '__unshelved__'; filterPapers(); open = false"
+                                class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 italic"
+                                :class="{ 'text-arxiv-red': filterShelf === '__unshelved__' }">
+                            Unshelved
+                            <span class="text-gray-400 dark:text-gray-500 text-xs ml-1 not-italic"
+                                  x-text="'(' + allPapers.filter(p => !p.shelves || p.shelves.length === 0).length + ')'"></span>
+                        </button>
+                        <div class="border-t border-gray-100 dark:border-gray-700 my-1" x-show="shelves.length > 0"></div>
+                        <template x-for="shelf in shelves" :key="shelf.id">
+                            <div class="group flex items-center hover:bg-gray-50 dark:hover:bg-gray-700">
+                                <!-- Normal display mode -->
+                                <template x-if="editingShelfId !== shelf.id">
+                                    <button @click="filterShelf = shelf.id; filterPapers(); open = false"
+                                            class="flex-1 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300"
+                                            :class="{ 'text-arxiv-red': filterShelf === shelf.id }">
+                                        <span x-text="shelf.name"></span>
+                                        <span class="text-gray-400 dark:text-gray-500 text-xs ml-1" x-text="'(' + shelf.paper_count + ')'"></span>
+                                    </button>
+                                </template>
+                                <!-- Inline edit mode -->
+                                <template x-if="editingShelfId === shelf.id">
+                                    <div class="flex-1 px-2 py-1.5">
+                                        <input type="text"
+                                               x-model="editingName"
+                                               x-ref="shelfEditInput"
+                                               @keyup.enter="submitShelfRename(shelf)"
+                                               @keyup.escape="editingShelfId = null"
+                                               @click.stop
+                                               class="w-full px-2 py-1 text-sm border border-blue-400 dark:border-blue-500 rounded
+                                                      bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100
+                                                      focus:outline-none focus:ring-1 focus:ring-blue-400">
+                                        <div class="flex items-center gap-1 mt-1">
+                                            <button @click.stop="submitShelfRename(shelf)"
+                                                    class="px-2 py-0.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+                                            <button @click.stop="editingShelfId = null"
+                                                    class="px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Cancel</button>
+                                        </div>
+                                    </div>
+                                </template>
+                                <!-- Action buttons (hidden during edit) -->
+                                <div x-show="editingShelfId !== shelf.id" class="hidden group-hover:flex items-center gap-0.5 pr-2">
+                                    <button @click.stop="startShelfRename(shelf)" title="Rename"
+                                            class="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                        </svg>
+                                    </button>
+                                    <button @click.stop="deleteShelf(shelf)" title="Delete"
+                                            class="p-1 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                
+                <!-- Tag Filter -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="px-3 py-2 border border-gray-200 dark:border-gray-600 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
+                        <span>Tags</span>
+                        <span x-show="filterTags.length || filterUntagged" class="bg-purple-600 text-white text-xs px-1.5 rounded" x-text="filterUntagged ? 1 : filterTags.length"></span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </button>
+                    <div x-show="open" x-cloak @click.away="if (!editingTagName) open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[220px] z-10 max-h-64 overflow-auto">
+                        <label class="flex items-center px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
+                            <input type="checkbox"
+                                   :checked="filterUntagged"
+                                   @change="filterUntagged = !filterUntagged; if (filterUntagged) filterTags = []; filterPapers()"
+                                   class="mr-2 rounded text-purple-600">
+                            <span class="text-sm text-gray-500 dark:text-gray-400 italic">Untagged</span>
+                            <span class="text-gray-400 dark:text-gray-500 text-xs ml-auto not-italic"
+                                  x-text="'(' + allPapers.filter(p => !p.tags || p.tags.length === 0).length + ')'"></span>
+                        </label>
+                        <div class="border-t border-gray-100 dark:border-gray-700 my-1" x-show="tags.length > 0"></div>
+                        <template x-for="tag in tags" :key="tag.name">
+                            <div class="group flex items-center hover:bg-gray-50 dark:hover:bg-gray-700">
+                                <!-- Normal display mode -->
+                                <template x-if="editingTagName !== tag.name">
+                                    <label class="flex-1 flex items-center px-3 py-2 cursor-pointer">
+                                        <input type="checkbox" 
+                                               :checked="filterTags.includes(tag.name)"
+                                               @change="toggleFilterTag(tag.name)"
+                                               class="mr-2 rounded text-purple-600">
+                                        <span class="text-sm text-gray-700 dark:text-gray-300" x-text="tag.name"></span>
+                                        <span class="text-gray-400 dark:text-gray-500 text-xs ml-auto" x-text="'(' + tag.paper_count + ')'"></span>
+                                    </label>
+                                </template>
+                                <!-- Inline edit mode -->
+                                <template x-if="editingTagName === tag.name">
+                                    <div class="flex-1 px-2 py-1.5">
+                                        <input type="text"
+                                               x-model="editingName"
+                                               @keyup.enter="submitTagRename(tag)"
+                                               @keyup.escape="editingTagName = null"
+                                               @click.stop
+                                               class="w-full px-2 py-1 text-sm border border-purple-400 dark:border-purple-500 rounded
+                                                      bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100
+                                                      focus:outline-none focus:ring-1 focus:ring-purple-400">
+                                        <div class="flex items-center gap-1 mt-1">
+                                            <button @click.stop="submitTagRename(tag)"
+                                                    class="px-2 py-0.5 text-xs bg-purple-600 text-white rounded hover:bg-purple-700">Save</button>
+                                            <button @click.stop="editingTagName = null"
+                                                    class="px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Cancel</button>
+                                        </div>
+                                    </div>
+                                </template>
+                                <!-- Action buttons (hidden during edit) -->
+                                <div x-show="editingTagName !== tag.name" class="hidden group-hover:flex items-center gap-0.5 pr-2">
+                                    <button @click.stop="startTagRename(tag)" title="Rename"
+                                            class="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                        </svg>
+                                    </button>
+                                    <button @click.stop="deleteTag(tag)" title="Delete"
+                                            class="p-1 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                
+                <!-- Status Filter -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="px-3 py-2 border border-gray-200 dark:border-gray-600 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
+                        <span>Status</span>
+                        <span x-show="filterStatus" class="bg-green-600 text-white text-xs px-1.5 rounded">1</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </button>
+                    <div x-show="open" x-cloak @click.away="open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[120px] z-10">
+                        <button @click="filterStatus = null; filterPapers(); open = false"
+                                class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">All</button>
+                        <button @click="filterStatus = 'to-read'; filterPapers(); open = false"
+                                class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">📚 To Read</button>
+                        <button @click="filterStatus = 'read'; filterPapers(); open = false"
+                                class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">✓ Read</button>
+                    </div>
+                </div>
+                
+                <!-- Clear Filters (always visible, styled when active) -->
+                <button @click="clearFilters()"
+                        :class="(searchQuery || filterShelf || filterTags.length || filterUntagged || filterStatus || filterStarred) 
+                            ? 'text-gray-500 hover:text-gray-700' 
+                            : 'text-gray-300 cursor-default'"
+                        :disabled="!(searchQuery || filterShelf || filterTags.length || filterUntagged || filterStatus || filterStarred)"
+                        class="px-3 py-2 text-sm">
+                    Clear all
+                </button>
+            </div>
+        </div>
+        
+        <!-- Second Row: Sort and Display Options -->
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+            <!-- Sort Options -->
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 dark:text-gray-400">Sort:</span>
+                <select x-model="sortBy" @change="filterPapers()"
+                        class="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1.5 
+                               bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300
+                               focus:outline-none focus:ring-1 focus:ring-arxiv-red">
+                    <option value="recent">Recent first</option>
+                    <option value="oldest">Oldest first</option>
+                    <option value="title">Title (A-Z)</option>
+                    <option value="author_last">Author last name (A-Z)</option>
+                    <option value="author_first">Author first name (A-Z)</option>
+                </select>
+            </div>
+            
+            <!-- Display Options -->
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 dark:text-gray-400">View:</span>
+                <div class="flex border border-gray-200 dark:border-gray-600 rounded-lg overflow-hidden">
+                    <button @click="cardSize = 'list'" 
+                            :class="cardSize === 'list' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'"
+                            class="px-2.5 py-1.5 text-xs font-medium" title="List view">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                        </svg>
+                    </button>
+                    <button @click="cardSize = 'small'" 
+                            :class="cardSize === 'small' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'"
+                            class="px-2.5 py-1.5 text-xs font-medium border-l border-gray-200 dark:border-gray-600">S</button>
+                    <button @click="cardSize = 'medium'" 
+                            :class="cardSize === 'medium' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'"
+                            class="px-2.5 py-1.5 text-xs font-medium border-l border-gray-200 dark:border-gray-600">M</button>
+                    <button @click="cardSize = 'large'" 
+                            :class="cardSize === 'large' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'"
+                            class="px-2.5 py-1.5 text-xs font-medium border-l border-gray-200 dark:border-gray-600">L</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Results Count and Actions -->
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-4">
+            <div class="text-sm text-gray-500 dark:text-gray-400">
+                <span x-text="filteredPapers.length"></span> of <span x-text="allPapers.length"></span> papers
+                <span x-show="searchQuery || filterShelf || filterTags.length || filterUntagged || filterStatus || filterStarred">
+                    (filtered)
+                </span>
+            </div>
+            
+            <!-- Selection info + bulk actions -->
+            <div x-show="selectedPapers.size > 0" class="flex items-center gap-3 text-sm">
+                <span class="text-blue-600 dark:text-blue-400 font-medium" x-text="selectedPapers.size + ' selected'"></span>
+                <button @click="selectNone()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                    (clear)
+                </button>
+                <span class="text-gray-300 dark:text-gray-600">|</span>
+                
+                <!-- Bulk Add to Shelf -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 
+                                   border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                        </svg>
+                        Shelf
+                    </button>
+                    <div x-show="open" x-cloak @click.away="open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[160px] z-20">
+                        <template x-for="shelf in shelves" :key="shelf.id">
+                            <button @click="bulkAddShelf(shelf.id); open = false"
+                                    class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                                    x-text="shelf.name">
+                            </button>
+                        </template>
+                        <div x-show="shelves.length === 0" class="px-3 py-2 text-sm text-gray-400 italic">No shelves yet</div>
+                    </div>
+                </div>
+                
+                <!-- Bulk Add Tag -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 
+                                   border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                        </svg>
+                        Tag
+                    </button>
+                    <div x-show="open" x-cloak @click.away="open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[160px] z-20">
+                        <template x-for="tag in tags" :key="tag.name">
+                            <button @click="bulkAddTag(tag.name); open = false"
+                                    class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                                    x-text="tag.name">
+                            </button>
+                        </template>
+                        <div x-show="tags.length === 0" class="px-3 py-2 text-sm text-gray-400 italic">No tags yet</div>
+                    </div>
+                </div>
+                
+                <!-- Bulk Remove Shelf -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 
+                                   border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"/>
+                        </svg>
+                        Shelf
+                    </button>
+                    <div x-show="open" x-cloak @click.away="open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[160px] z-20">
+                        <template x-for="shelf in shelves" :key="shelf.id">
+                            <button @click="bulkRemoveShelf(shelf.id); open = false"
+                                    class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                                    x-text="shelf.name">
+                            </button>
+                        </template>
+                    </div>
+                </div>
+                
+                <!-- Bulk Remove Tag -->
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 
+                                   border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"/>
+                        </svg>
+                        Tag
+                    </button>
+                    <div x-show="open" x-cloak @click.away="open = false"
+                         class="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[160px] z-20">
+                        <template x-for="tag in tags" :key="tag.name">
+                            <button @click="bulkRemoveTag(tag.name); open = false"
+                                    class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                                    x-text="tag.name">
+                            </button>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="flex items-center gap-2">
+            <!-- Select All / None -->
+            <div x-show="filteredPapers.length > 0" class="flex items-center gap-1 mr-2">
+                <button @click="selectAll()" 
+                        class="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                    Select all
+                </button>
+                <span class="text-gray-300 dark:text-gray-600">|</span>
+                <button @click="selectNone()" 
+                        class="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                    None
+                </button>
+            </div>
+            
+            <!-- Download PDFs Button -->
+            <button @click="downloadSelectedPdfs()"
+                    :disabled="downloadingPdfs"
+                    x-show="filteredPapers.length > 0"
+                    class="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 
+                           hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 
+                           rounded-lg transition-colors disabled:opacity-50">
+                <svg :class="downloadingPdfs ? 'animate-spin' : ''" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <template x-if="!downloadingPdfs">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </template>
+                    <template x-if="downloadingPdfs">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </template>
+                </svg>
+                <span x-text="downloadingPdfs ? 'Downloading...' : 'Download PDFs'"></span>
+            </button>
+            
+            <!-- Sync Citations Button -->
+            <button @click="syncCitations()"
+                    :disabled="syncing"
+                    x-show="allPapers.length > 0"
+                    class="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 
+                           hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 
+                           rounded-lg transition-colors disabled:opacity-50">
+                <svg :class="syncing ? 'animate-spin' : ''" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span x-text="syncing ? 'Syncing...' : 'Sync with ADS'"></span>
+            </button>
+            
+            <!-- Export BibTeX Button -->
+            <button @click="exportBibtex()"
+                    x-show="filteredPapers.length > 0"
+                    class="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 
+                           hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 
+                           rounded-lg transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                Export BibTeX
+            </button>
+        </div>
+    </div>
+    
+    <!-- Loading State -->
+    <div x-show="loading" class="text-center py-12">
+        <svg class="animate-spin h-8 w-8 mx-auto text-gray-400 dark:text-gray-500" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+        </svg>
+    </div>
+    
+    <!-- Empty State -->
+    <div x-show="!loading && allPapers.length === 0" class="text-center py-12">
+        <svg class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" 
+                  d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+        </svg>
+        <p class="text-gray-500 dark:text-gray-400 mb-4">Your library is empty</p>
+        <a href="/" class="text-arxiv-red hover:underline text-sm">Add your first paper</a>
+    </div>
+    
+    <!-- No Results State -->
+    <div x-show="!loading && allPapers.length > 0 && filteredPapers.length === 0" class="text-center py-12">
+        <p class="text-gray-500 dark:text-gray-400 mb-4">No papers match your filters</p>
+        <button @click="clearFilters()" class="text-arxiv-red hover:underline text-sm">Clear filters</button>
+    </div>
+    
+    <!-- Papers Grid View -->
+    <div x-show="!loading && filteredPapers.length > 0 && cardSize !== 'list'" 
+         :class="{
+             'grid-cols-1 md:grid-cols-2 lg:grid-cols-3': cardSize === 'small' || cardSize === 'medium',
+             'grid-cols-1 lg:grid-cols-2': cardSize === 'large'
+         }"
+         class="grid gap-4">
+        <template x-for="paper in filteredPapers" :key="paper.id">
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-md transition-shadow relative"
+                 @mouseenter="showPreview(paper, $el)"
+                 @mouseleave="hidePreview()">
+                <!-- Cover Image -->
+                <template x-if="paper.cover_image">
+                    <div :class="{
+                             'h-32': cardSize === 'small',
+                             'h-48': cardSize === 'medium',
+                             'h-56': cardSize === 'large'
+                         }"
+                         class="bg-gray-100 dark:bg-gray-700 overflow-hidden">
+                        <img :src="'/uploads/' + paper.cover_image" 
+                             class="w-full h-full object-cover"
+                             alt="Paper cover">
+                    </div>
+                </template>
+                
+                <!-- Content -->
+                <div class="p-4">
+                    <!-- Top row: Checkbox + Date + Star -->
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <!-- Selection checkbox -->
+                            <input type="checkbox" 
+                                   :checked="isSelected(paper.id)"
+                                   @click.stop="toggleSelect(paper.id)"
+                                   class="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 
+                                          focus:ring-blue-500 dark:bg-gray-700 cursor-pointer">
+                            <span class="text-xs text-gray-500 dark:text-gray-400" 
+                                  x-text="formatDate(paper.published)"></span>
+                            <!-- Local PDF indicator -->
+                            <span x-show="paper.local_pdf" class="text-green-500" title="Saved offline">
+                                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                                </svg>
+                            </span>
+                        </div>
+                        <!-- Star indicator -->
+                        <button @click.prevent="toggleStar(paper)" 
+                                class="p-1 -m-1 hover:scale-110 transition-transform"
+                                :class="paper.starred ? 'text-yellow-400' : 'text-gray-300 dark:text-gray-600 hover:text-yellow-400'">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <!-- Title -->
+                    <a :href="'/paper/' + paper.id"
+                       class="block text-sm font-medium text-gray-900 dark:text-gray-100 hover:text-arxiv-red mb-2"
+                       :class="cardSize === 'small' ? 'line-clamp-2' : 'line-clamp-3'"
+                       x-html="paper.title"></a>
+                    
+                    <!-- Authors -->
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-2 line-clamp-1">
+                        <span x-text="paper.authors.slice(0, 3).join(', ')"></span>
+                        <span x-show="paper.authors.length > 3">...</span>
+                    </p>
+                    
+                    <!-- Hidden searchable content -->
+                    <div class="hidden" x-text="paper.abstract"></div>
+                    <div class="hidden" x-text="paper.notes || ''"></div>
+                    
+                    <!-- Tags -->
+                    <div class="flex flex-wrap gap-1 mb-3">
+                        <template x-for="tag in paper.tags.slice(0, 3)" :key="tag">
+                            <span class="text-xs px-2 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded"
+                                  x-text="tag"></span>
+                        </template>
+                        <span x-show="paper.tags.length > 3" 
+                              class="text-xs px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded"
+                              x-text="'+' + (paper.tags.length - 3)"></span>
+                    </div>
+                    
+                    <!-- Footer -->
+                    <div class="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
+                        <span x-text="paper.arxiv_id || paper.bibcode"></span>
+                        <div class="flex gap-2">
+                            <a x-show="paper.arxiv_url" :href="paper.arxiv_url" target="_blank" class="hover:text-arxiv-red">arXiv</a>
+                            <a x-show="!paper.arxiv_url && paper.ads_url" :href="paper.ads_url" target="_blank" class="hover:text-arxiv-red">ADS</a>
+                            <a x-show="paper.pdf_url" :href="paper.pdf_url" target="_blank" class="hover:text-arxiv-red">PDF</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+    
+    <!-- Papers List View -->
+    <div x-show="!loading && filteredPapers.length > 0 && cardSize === 'list'" 
+         class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <!-- List Header -->
+        <div class="hidden sm:grid grid-cols-12 gap-4 px-4 py-2 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+            <div class="col-span-1"></div>
+            <div class="col-span-4">Title</div>
+            <div class="col-span-2">Author</div>
+            <div class="col-span-1">Date</div>
+            <div class="col-span-2">Tags</div>
+            <div class="col-span-2 text-right">Links</div>
+        </div>
+        
+        <!-- List Items -->
+        <template x-for="paper in filteredPapers" :key="paper.id">
+            <div class="grid grid-cols-12 gap-4 px-4 py-3 border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30 items-center text-sm"
+                 :class="isSelected(paper.id) ? 'bg-blue-50 dark:bg-blue-900/20' : ''"
+                 @mouseenter="showPreview(paper, $el)"
+                 @mouseleave="hidePreview()">
+                <!-- Checkbox + Star -->
+                <div class="col-span-1 flex items-center gap-2">
+                    <input type="checkbox" 
+                           :checked="isSelected(paper.id)"
+                           @click.stop="toggleSelect(paper.id)"
+                           class="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 
+                                  focus:ring-blue-500 dark:bg-gray-700 cursor-pointer">
+                    <button @click.prevent="toggleStar(paper)" 
+                            class="hover:scale-110 transition-transform"
+                            :class="paper.starred ? 'text-yellow-400' : 'text-gray-300 dark:text-gray-600 hover:text-yellow-400'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <!-- Title -->
+                <div class="col-span-4">
+                    <a :href="'/paper/' + paper.id"
+                       class="text-gray-900 dark:text-gray-100 hover:text-arxiv-red line-clamp-1 font-medium"
+                       x-html="paper.title"></a>
+                    <span class="text-xs text-gray-400 dark:text-gray-500 ml-1" x-text="paper.arxiv_id || paper.bibcode"></span>
+                    <!-- Local PDF indicator -->
+                    <span x-show="paper.local_pdf" class="text-green-500 ml-1" title="Saved offline">
+                        <svg class="w-3 h-3 inline" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </span>
+                </div>
+                
+                <!-- Author -->
+                <div class="col-span-2 text-gray-600 dark:text-gray-400 text-xs">
+                    <span x-text="getFirstAuthorShort(paper.authors)"></span>
+                </div>
+                
+                <!-- Date -->
+                <div class="col-span-1 text-gray-500 dark:text-gray-400 text-xs">
+                    <span x-text="formatDateSlash(paper.published)"></span>
+                </div>
+                
+                <!-- Tags -->
+                <div class="col-span-2 flex flex-wrap gap-1">
+                    <template x-for="tag in paper.tags.slice(0, 2)" :key="tag">
+                        <span class="text-xs px-1.5 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded"
+                              x-text="tag"></span>
+                    </template>
+                    <span x-show="paper.tags.length > 2" 
+                          class="text-xs text-gray-400"
+                          x-text="'+' + (paper.tags.length - 2)"></span>
+                </div>
+                
+                <!-- Links -->
+                <div class="col-span-2 text-right text-xs space-x-2">
+                    <a x-show="paper.arxiv_url" :href="paper.arxiv_url" target="_blank" class="text-gray-400 hover:text-arxiv-red dark:hover:text-red-400">arXiv</a>
+                    <a x-show="!paper.arxiv_url && paper.ads_url" :href="paper.ads_url" target="_blank" class="text-gray-400 hover:text-arxiv-red dark:hover:text-red-400">ADS</a>
+                    <a x-show="paper.pdf_url" :href="paper.pdf_url" target="_blank" class="text-gray-400 hover:text-arxiv-red dark:hover:text-red-400">PDF</a>
+                </div>
+            </div>
+        </template>
+    </div>
+    
+    <!-- Abstract Preview Tooltip -->
+    <div x-show="previewPaper" 
+         x-cloak
+         x-transition:enter="transition ease-out duration-150"
+         x-transition:enter-start="opacity-0 scale-95"
+         x-transition:enter-end="opacity-100 scale-100"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100 scale-100"
+         x-transition:leave-end="opacity-0 scale-95"
+         :style="previewStyle"
+         class="fixed z-50 w-[40rem] max-h-[70vh] overflow-y-auto bg-white dark:bg-gray-800 rounded-xl shadow-2xl border-2 border-gray-200 dark:border-gray-600 p-5 pointer-events-none ring-1 ring-black/5 dark:ring-white/10">
+        <template x-if="previewPaper">
+            <div>
+                <h4 class="font-medium text-gray-900 dark:text-gray-100 text-base mb-3 leading-snug" x-html="previewPaper.title"></h4>
+                <p class="text-sm text-gray-700 dark:text-gray-300 leading-relaxed" x-html="previewPaper.abstract"></p>
+            </div>
+        </template>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function library() {
+    return {
+        allPapers: [],
+        filteredPapers: [],
+        loading: true,
+        
+        // Filters
+        searchQuery: '',
+        filterShelf: null,
+        filterTags: [],
+        filterStatus: null,
+        filterStarred: false,
+        filterUntagged: false,
+        
+        // Sort & Display
+        sortBy: 'recent',
+        cardSize: 'small',
+        
+        // Sync state
+        syncing: false,
+        
+        // Selection state
+        selectedPapers: new Set(),
+        downloadingPdfs: false,
+        
+        // Preview state
+        previewPaper: null,
+        previewStyle: '',
+        previewTimeout: null,
+        
+        // Inline edit state
+        editingShelfId: null,
+        editingTagName: null,
+        editingName: '',
+        
+        // Reference data
+        shelves: [],
+        tags: [],
+        
+        async init() {
+            // Load saved preferences
+            this.cardSize = localStorage.getItem('libraryCardSize') || 'small';
+            this.sortBy = localStorage.getItem('librarySortBy') || 'recent';
+            
+            // Watch for changes to save preferences
+            this.$watch('cardSize', (val) => localStorage.setItem('libraryCardSize', val));
+            this.$watch('sortBy', (val) => localStorage.setItem('librarySortBy', val));
+            
+            await Promise.all([
+                this.loadShelvesAndTags(),
+                this.loadAllPapers()
+            ]);
+        },
+        
+        async loadShelvesAndTags() {
+            const [shelvesRes, tagsRes] = await Promise.all([
+                fetch('/api/shelves'),
+                fetch('/api/tags')
+            ]);
+            this.shelves = await shelvesRes.json();
+            this.tags = await tagsRes.json();
+        },
+        
+        async loadAllPapers() {
+            this.loading = true;
+            try {
+                const res = await fetch('/api/papers?limit=1000');
+                this.allPapers = await res.json();
+                this.filterPapers();
+            } catch (e) {
+                showToast('Failed to load papers', 'error');
+            } finally {
+                this.loading = false;
+                this.$nextTick(() => renderMath());
+            }
+        },
+        
+        filterPapers() {
+            let papers = this.allPapers;
+            
+            // Text search
+            if (this.searchQuery) {
+                const query = this.searchQuery.toLowerCase();
+                papers = papers.filter(paper => {
+                    const searchable = [
+                        paper.title,
+                        paper.abstract,
+                        paper.authors.join(' '),
+                        paper.notes || '',
+                        paper.arxiv_id || '',
+                        paper.bibcode || '',
+                        paper.tags.join(' ')
+                    ].join(' ').toLowerCase();
+                    return searchable.includes(query);
+                });
+            }
+            
+            // Starred filter
+            if (this.filterStarred) {
+                papers = papers.filter(p => p.starred);
+            }
+            
+            // Shelf filter
+            if (this.filterShelf) {
+                if (this.filterShelf === '__unshelved__') {
+                    papers = papers.filter(p => !p.shelves || p.shelves.length === 0);
+                } else {
+                    papers = papers.filter(p => p.shelves.includes(this.filterShelf));
+                }
+            }
+            
+            // Tag filter
+            if (this.filterUntagged) {
+                papers = papers.filter(p => !p.tags || p.tags.length === 0);
+            } else if (this.filterTags.length) {
+                papers = papers.filter(p => 
+                    this.filterTags.every(tag => p.tags.includes(tag))
+                );
+            }
+            
+            // Status filter
+            if (this.filterStatus) {
+                papers = papers.filter(p => p.status === this.filterStatus);
+            }
+            
+            // Sort (starred always first, then by selected sort)
+            papers = this.sortPapers(papers);
+            
+            this.filteredPapers = papers;
+            this.$nextTick(() => renderMath());
+        },
+        
+        sortPapers(papers) {
+            // Extract last name - handles:
+            // "John Smith" -> "smith"
+            // "John A. Smith" -> "smith"  
+            // "John Smith Jr." -> "smith" (ignores suffixes)
+            // "María García López" -> "lópez" (takes last word)
+            const getLastName = (author) => {
+                if (!author) return '';
+                const suffixes = ['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'phd', 'md'];
+                const parts = author.trim().split(/\s+/);
+                // Work backwards to find last name (skip suffixes)
+                for (let i = parts.length - 1; i >= 0; i--) {
+                    const part = parts[i].toLowerCase().replace(/[.,]/g, '');
+                    if (!suffixes.includes(part)) {
+                        return part;
+                    }
+                }
+                return parts[parts.length - 1].toLowerCase();
+            };
+            
+            const getFirstName = (author) => {
+                if (!author) return '';
+                const parts = author.trim().split(/\s+/);
+                return parts[0].toLowerCase();
+            };
+            
+            const sorted = [...papers].sort((a, b) => {
+                // Starred papers always first
+                if (a.starred && !b.starred) return -1;
+                if (!a.starred && b.starred) return 1;
+                
+                // Then by selected sort
+                switch (this.sortBy) {
+                    case 'recent':
+                        return new Date(b.published) - new Date(a.published);
+                    case 'oldest':
+                        return new Date(a.published) - new Date(b.published);
+                    case 'title':
+                        return a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+                    case 'author_last':
+                        const aLast = a.authors[0] ? getLastName(a.authors[0]) : '';
+                        const bLast = b.authors[0] ? getLastName(b.authors[0]) : '';
+                        return aLast.localeCompare(bLast);
+                    case 'author_first':
+                        const aFirst = a.authors[0] ? getFirstName(a.authors[0]) : '';
+                        const bFirst = b.authors[0] ? getFirstName(b.authors[0]) : '';
+                        return aFirst.localeCompare(bFirst);
+                    default:
+                        return 0;
+                }
+            });
+            
+            return sorted;
+        },
+        
+        async toggleStar(paper) {
+            const newStarred = !paper.starred;
+            try {
+                const res = await fetch(`/api/papers/${paper.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ starred: newStarred })
+                });
+                if (res.ok) {
+                    paper.starred = newStarred;
+                    this.filterPapers(); // Re-sort
+                }
+            } catch (e) {
+                showToast('Failed to update star', 'error');
+            }
+        },
+        
+        toggleFilterTag(name) {
+            this.filterUntagged = false;
+            if (this.filterTags.includes(name)) {
+                this.filterTags = this.filterTags.filter(t => t !== name);
+            } else {
+                this.filterTags.push(name);
+            }
+            this.filterPapers();
+        },
+        
+        clearFilters() {
+            this.searchQuery = '';
+            this.filterShelf = null;
+            this.filterTags = [];
+            this.filterUntagged = false;
+            this.filterStatus = null;
+            this.filterStarred = false;
+            this.filterPapers();
+        },
+        
+        async syncCitations() {
+            if (this.syncing) return;
+            
+            this.syncing = true;
+            try {
+                const res = await fetch('/api/papers/sync-citations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(data.message, 'success');
+                    // Reload papers to get updated citation info
+                    await this.loadAllPapers();
+                } else {
+                    showToast(data.detail || 'Sync failed', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to sync with ADS', 'error');
+            } finally {
+                this.syncing = false;
+            }
+        },
+        
+        exportBibtex() {
+            // Use selected papers if any, otherwise use filtered papers
+            const papers = this.getEffectiveSelection();
+            const bibtexEntries = papers
+                .filter(p => p.bibtex)
+                .map(p => p.bibtex);
+            
+            if (bibtexEntries.length === 0) {
+                showToast('No citations available for selected papers', 'error');
+                return;
+            }
+            
+            const combined = bibtexEntries.join('\n\n');
+            const count = bibtexEntries.length;
+            
+            // Generate title based on selection/filters
+            let title = 'Export BibTeX';
+            if (this.selectedPapers.size > 0) {
+                title = `BibTeX: ${count} selected`;
+            } else if (this.filterShelf) {
+                const shelf = this.shelves.find(s => s.id === this.filterShelf);
+                if (shelf) title = `BibTeX: ${shelf.name}`;
+            } else if (this.filterTags.length === 1) {
+                title = `BibTeX: ${this.filterTags[0]}`;
+            } else if (this.searchQuery) {
+                title = `BibTeX: "${this.searchQuery}"`;
+            }
+            
+            showBibtexModal(combined, title, count);
+        },
+        
+        // Selection helpers
+        getEffectiveSelection() {
+            // If papers are selected, use those; otherwise use all filtered papers
+            if (this.selectedPapers.size > 0) {
+                return this.filteredPapers.filter(p => this.selectedPapers.has(p.id));
+            }
+            return this.filteredPapers;
+        },
+        
+        toggleSelect(id) {
+            if (this.selectedPapers.has(id)) {
+                this.selectedPapers.delete(id);
+            } else {
+                this.selectedPapers.add(id);
+            }
+            // Force reactivity
+            this.selectedPapers = new Set(this.selectedPapers);
+        },
+        
+        isSelected(id) {
+            return this.selectedPapers.has(id);
+        },
+        
+        selectAll() {
+            this.filteredPapers.forEach(p => this.selectedPapers.add(p.id));
+            this.selectedPapers = new Set(this.selectedPapers);
+        },
+        
+        selectNone() {
+            this.selectedPapers.clear();
+            this.selectedPapers = new Set(this.selectedPapers);
+        },
+        
+        async downloadSelectedPdfs() {
+            if (this.downloadingPdfs) return;
+            
+            const papers = this.getEffectiveSelection();
+            const toDownload = papers.filter(p => !p.local_pdf).map(p => p.id);
+            
+            if (toDownload.length === 0) {
+                showToast('All selected papers already have local PDFs', 'info');
+                return;
+            }
+            
+            this.downloadingPdfs = true;
+            try {
+                const res = await fetch('/api/papers/download-pdfs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(toDownload)
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    showToast(data.message, 'success');
+                    // Reload papers to get updated local_pdf info
+                    await this.loadAllPapers();
+                } else {
+                    showToast(data.detail || 'Download failed', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to download PDFs', 'error');
+            } finally {
+                this.downloadingPdfs = false;
+            }
+        },
+        
+        // Helper for list view - returns "LastName et al." or just "LastName"
+        getFirstAuthorShort(authors) {
+            if (!authors || authors.length === 0) return '';
+            const first = authors[0];
+            const suffixes = ['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'phd', 'md'];
+            const parts = first.trim().split(/\s+/);
+            let lastName = parts[parts.length - 1];
+            // Skip suffixes
+            for (let i = parts.length - 1; i >= 0; i--) {
+                const part = parts[i].toLowerCase().replace(/[.,]/g, '');
+                if (!suffixes.includes(part)) {
+                    lastName = parts[i];
+                    break;
+                }
+            }
+            return authors.length > 1 ? `${lastName} et al.` : lastName;
+        },
+        
+        // Date formatting (tolerant of missing dates on ADS-only papers)
+        formatDate(value) {
+            if (!value) return '—';
+            const d = new Date(value);
+            if (isNaN(d)) return '—';
+            return d.toLocaleDateString('en-US', {year: 'numeric', month: 'short', day: 'numeric'});
+        },
+        
+        formatDateSlash(value) {
+            if (!value) return '—';
+            const d = new Date(value);
+            if (isNaN(d)) return '—';
+            return d.toISOString().slice(0, 10).replace(/-/g, '/');
+        },
+        
+        // Abstract preview functions
+        showPreview(paper, el) {
+            // Clear any existing timeout
+            if (this.previewTimeout) {
+                clearTimeout(this.previewTimeout);
+            }
+            
+            // Debounce: wait 300ms before showing
+            this.previewTimeout = setTimeout(() => {
+                const rect = el.getBoundingClientRect();
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+                const tooltipWidth = 640; // w-[40rem] = 640px
+                const tooltipMaxHeight = viewportHeight * 0.7; // max-h-[70vh]
+                
+                // Calculate horizontal position - prefer right side, fall back to left
+                let left = rect.right + 16;
+                if (left + tooltipWidth > viewportWidth - 20) {
+                    // Not enough room on right, try left
+                    left = rect.left - tooltipWidth - 16;
+                    if (left < 20) {
+                        // Not enough room on left either, center it
+                        left = Math.max(20, (viewportWidth - tooltipWidth) / 2);
+                    }
+                }
+                
+                // Determine if we're in the bottom half of the viewport
+                const elementCenter = rect.top + rect.height / 2;
+                const isBottomHalf = elementCenter > viewportHeight / 2;
+                
+                let top;
+                if (isBottomHalf) {
+                    // Position above the element - align bottom of tooltip with top of element
+                    top = rect.top - tooltipMaxHeight - 8;
+                    // Make sure we don't go above the viewport
+                    if (top < 20) {
+                        top = 20;
+                    }
+                } else {
+                    // Position below/aligned with the element
+                    top = rect.top;
+                    // Make sure we don't go below the viewport
+                    if (top + tooltipMaxHeight > viewportHeight - 20) {
+                        top = viewportHeight - tooltipMaxHeight - 20;
+                    }
+                }
+                
+                this.previewStyle = `left: ${left}px; top: ${top}px;`;
+                this.previewPaper = paper;
+                
+                // Re-render MathJax if present
+                this.$nextTick(() => {
+                    if (typeof renderMath === 'function') {
+                        renderMath();
+                    }
+                });
+            }, 300);
+        },
+        
+        hidePreview() {
+            if (this.previewTimeout) {
+                clearTimeout(this.previewTimeout);
+                this.previewTimeout = null;
+            }
+            this.previewPaper = null;
+        },
+        
+        // === Shelf Management ===
+        
+        startShelfRename(shelf) {
+            this.editingTagName = null;
+            this.editingShelfId = shelf.id;
+            this.editingName = shelf.name;
+            this.$nextTick(() => {
+                const input = document.querySelector(`input[x-model="editingName"]`);
+                if (input) { input.focus(); input.select(); }
+            });
+        },
+        
+        async submitShelfRename(shelf) {
+            const newName = this.editingName.trim();
+            if (!newName || newName === shelf.name) {
+                this.editingShelfId = null;
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/api/shelves/${shelf.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                });
+                if (res.ok) {
+                    this.editingShelfId = null;
+                    showToast(`Shelf renamed to "${newName}"`, 'success');
+                    await this.loadShelvesAndTags();
+                } else {
+                    const data = await res.json();
+                    showToast(data.detail || 'Failed to rename shelf', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to rename shelf', 'error');
+            }
+        },
+        
+        async deleteShelf(shelf) {
+            if (!confirm(`Delete shelf "${shelf.name}"? This will remove it from ${shelf.paper_count} paper(s). The papers themselves will not be deleted.`)) return;
+            
+            try {
+                const res = await fetch(`/api/shelves/${shelf.id}`, { method: 'DELETE' });
+                if (res.ok) {
+                    if (this.filterShelf === shelf.id) {
+                        this.filterShelf = null;
+                    }
+                    showToast(`Shelf "${shelf.name}" deleted`, 'success');
+                    await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+                } else {
+                    showToast('Failed to delete shelf', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to delete shelf', 'error');
+            }
+        },
+        
+        // === Tag Management ===
+        
+        startTagRename(tag) {
+            this.editingShelfId = null;
+            this.editingTagName = tag.name;
+            this.editingName = tag.name;
+            this.$nextTick(() => {
+                const input = document.querySelector(`input[x-model="editingName"]`);
+                if (input) { input.focus(); input.select(); }
+            });
+        },
+        
+        async submitTagRename(tag) {
+            const newName = this.editingName.trim();
+            if (!newName || newName === tag.name) {
+                this.editingTagName = null;
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/api/tags/${encodeURIComponent(tag.name)}/rename`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_name: newName })
+                });
+                if (res.ok) {
+                    // Update filter if this tag was being filtered on
+                    const idx = this.filterTags.indexOf(tag.name);
+                    if (idx !== -1) {
+                        this.filterTags[idx] = newName;
+                    }
+                    this.editingTagName = null;
+                    showToast(`Tag renamed to "${newName}"`, 'success');
+                    await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+                } else {
+                    const data = await res.json();
+                    showToast(data.detail || 'Failed to rename tag', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to rename tag', 'error');
+            }
+        },
+        
+        async deleteTag(tag) {
+            if (!confirm(`Delete tag "${tag.name}"? This will remove it from ${tag.paper_count} paper(s). The papers themselves will not be deleted.`)) return;
+            
+            try {
+                const res = await fetch(`/api/tags/${encodeURIComponent(tag.name)}`, { method: 'DELETE' });
+                if (res.ok) {
+                    this.filterTags = this.filterTags.filter(t => t !== tag.name);
+                    showToast(`Tag "${tag.name}" deleted`, 'success');
+                    await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+                } else {
+                    showToast('Failed to delete tag', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to delete tag', 'error');
+            }
+        },
+        
+        // === Bulk Operations ===
+        
+        async _bulkUpdate(payload) {
+            try {
+                const res = await fetch('/api/papers/bulk-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    return data.updated;
+                } else {
+                    const data = await res.json();
+                    showToast(data.detail || 'Bulk update failed', 'error');
+                }
+            } catch (e) {
+                showToast('Bulk update failed', 'error');
+            }
+            return 0;
+        },
+        
+        async bulkAddShelf(shelfId) {
+            const ids = [...this.selectedPapers];
+            const shelf = this.shelves.find(s => s.id === shelfId);
+            const count = await this._bulkUpdate({ ids: ids, add_shelves: [shelfId] });
+            if (count > 0) {
+                showToast(`Added ${count} paper(s) to "${shelf?.name || shelfId}"`, 'success');
+                await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+            } else {
+                showToast('All selected papers were already on that shelf', 'info');
+            }
+        },
+        
+        async bulkRemoveShelf(shelfId) {
+            const ids = [...this.selectedPapers];
+            const shelf = this.shelves.find(s => s.id === shelfId);
+            const count = await this._bulkUpdate({ ids: ids, remove_shelves: [shelfId] });
+            if (count > 0) {
+                showToast(`Removed ${count} paper(s) from "${shelf?.name || shelfId}"`, 'success');
+                await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+            } else {
+                showToast('None of the selected papers were on that shelf', 'info');
+            }
+        },
+        
+        async bulkAddTag(tagName) {
+            const ids = [...this.selectedPapers];
+            const count = await this._bulkUpdate({ ids: ids, add_tags: [tagName] });
+            if (count > 0) {
+                showToast(`Added tag "${tagName}" to ${count} paper(s)`, 'success');
+                await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+            } else {
+                showToast('All selected papers already had that tag', 'info');
+            }
+        },
+        
+        async bulkRemoveTag(tagName) {
+            const ids = [...this.selectedPapers];
+            const count = await this._bulkUpdate({ ids: ids, remove_tags: [tagName] });
+            if (count > 0) {
+                showToast(`Removed tag "${tagName}" from ${count} paper(s)`, 'success');
+                await Promise.all([this.loadShelvesAndTags(), this.loadAllPapers()]);
+            } else {
+                showToast('None of the selected papers had that tag', 'info');
+            }
+        }
+    };
+}
+</script>
+{% endblock %}
