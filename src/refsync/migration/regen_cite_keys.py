@@ -10,8 +10,9 @@ Two modes:
 
   default   Fix only keys that actually break LaTeX: missing, containing
             whitespace, non-ASCII, or duplicated (the later paper of a
-            duplicate pair gets an a/b suffix). Every other key is left alone,
-            so existing \\cite{} commands keep working.
+            duplicate pair gets an a/b suffix), plus bare group keys like
+            "Collaboration:2026" (-> Euclid_Collaboration:2026). Every other
+            key is left alone, so existing \\cite{} commands keep working.
 
   --all     Bring every key to the current scheme (e.g. Dokkum:2026 ->
             van_Dokkum:2026). Keys already in the current form are never
@@ -42,8 +43,22 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import refsync
 from refsync.models import Paper
-from refsync.services.bibtex import generate_cite_key, update_cite_key_in_bibtex
+
+try:
+    # surname_slug only exists in the fixed bibtex module; if it's missing, the
+    # `refsync` being imported is an older installed copy, not this repo.
+    from refsync.services.bibtex import (
+        generate_cite_key,
+        surname_slug,  # noqa: F401
+        update_cite_key_in_bibtex,
+    )
+except ImportError:
+    sys.exit(
+        f"The refsync package being imported ({Path(refsync.__file__).parent}) is an older "
+        "install without the cite-key fixes.\nReinstall from the repo root with: pip install -e ."
+    )
 
 
 def _default_db_path() -> Path:
@@ -53,8 +68,14 @@ def _default_db_path() -> Path:
 
 
 def _is_broken(key) -> bool:
-    """True if the key would break \\cite{} (missing, whitespace, non-ASCII)."""
-    return not key or not key.isascii() or bool(re.search(r"\s", key))
+    """
+    True if the key would break \\cite{} (missing, whitespace, non-ASCII), or is
+    a bare group key like "Collaboration:2026" that every collaboration paper
+    from that year would share.
+    """
+    if not key or not key.isascii() or re.search(r"\s", key):
+        return True
+    return bool(re.match(r"(Collaboration|Team|Consortium):", key, re.IGNORECASE))
 
 
 def _matches_scheme(key: str, base_key: str) -> bool:

@@ -66,6 +66,33 @@ def _clean_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()
 
 
+# Group authors ("Euclid Collaboration", "HSC Team", "SKA Consortium")
+_GROUP_WORD = re.compile(r"\b(collaboration|team|consortium)\b", re.IGNORECASE)
+
+
+def _group_author(name: str) -> Optional[str]:
+    """
+    Return the full group name if this author is a collaboration/team, else None.
+
+        "Euclid Collaboration"             -> "Euclid Collaboration"
+        "Euclid Collaboration: Y. Mellier" -> "Euclid Collaboration"  (arXiv style)
+        "Collaboration, Euclid"            -> "Euclid Collaboration"
+        "The LIGO Scientific Collaboration"-> "LIGO Scientific Collaboration"
+    """
+    head = name.split(":", 1)[0].strip()
+    parts = [p.strip() for p in head.split(",") if p.strip()]
+    if not parts:
+        return None
+    if len(parts) >= 2 and _GROUP_WORD.fullmatch(parts[0]):
+        head = f"{parts[1]} {parts[0]}"
+    elif _GROUP_WORD.search(parts[0]):
+        head = parts[0]
+    else:
+        return None
+    head = re.sub(r"^the\s+", "", head, flags=re.IGNORECASE).strip()
+    return head or None
+
+
 def _split_space_form(name: str) -> tuple[str, str, str]:
     """Split 'First von Last [Jr.]' into (first, von+last, suffix)."""
     tokens = name.split()
@@ -100,6 +127,7 @@ def _split_name(name: str) -> tuple[str, str, str]:
         "John Smith Jr."            -> ("John", "Smith", "Jr.")
         "Smith, Jr., John"          -> ("John", "Smith", "Jr.")   (BibTeX order)
         "Smith, John, Jr."          -> ("John", "Smith", "Jr.")
+        "Euclid Collaboration"      -> ("", "Euclid Collaboration", "")
 
     LaTeX escapes are converted to Unicode first. Returns ("", "", "") for an
     empty name.
@@ -107,6 +135,10 @@ def _split_name(name: str) -> tuple[str, str, str]:
     name = _clean_name(name or "")
     if not name:
         return "", "", ""
+
+    group = _group_author(name)
+    if group:
+        return "", group, ""
 
     if "," not in name:
         return _split_space_form(name)

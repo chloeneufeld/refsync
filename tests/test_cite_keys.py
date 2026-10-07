@@ -44,6 +44,12 @@ def _paper(author: str, year: int = 2026, **kw) -> Paper:
         ("Du{\\v{s}}an Kere{\\v{s}}", ("Dušan", "Kereš", "")),
         ("Plato", ("", "Plato", "")),
         ("", ("", "", "")),
+        ("Euclid Collaboration", ("", "Euclid Collaboration", "")),
+        ("Euclid Collaboration: Y. Mellier", ("", "Euclid Collaboration", "")),
+        ("Collaboration, Euclid", ("", "Euclid Collaboration", "")),
+        ("The LIGO Scientific Collaboration", ("", "LIGO Scientific Collaboration", "")),
+        ("HSC Team", ("", "HSC Team", "")),
+        ("SKA Consortium", ("", "SKA Consortium", "")),
     ],
 )
 def test_split_name(name, expected):
@@ -65,6 +71,10 @@ def test_split_name(name, expected):
         ("Brian O'Shea", "OShea:2026"),
         ("John Smith Jr.", "Smith:2026"),
         ("Imad Pasha", "Pasha:2026"),
+        ("Euclid Collaboration", "Euclid_Collaboration:2026"),
+        ("Euclid Collaboration: Y. Mellier", "Euclid_Collaboration:2026"),
+        ("DESI Collaboration", "DESI_Collaboration:2026"),
+        ("Fermi-LAT Collaboration", "Fermi-LAT_Collaboration:2026"),
     ],
 )
 def test_cite_key(author, key):
@@ -89,11 +99,18 @@ def test_cite_key_ads_only_fallback_is_ascii():
 
 def test_format_authors_bibtex():
     out = format_authors_bibtex(
-        ["Pieter van Dokkum", "Kereš, Dušan", "John Smith Jr.", "Imad Pasha", "Plato"]
+        [
+            "Pieter van Dokkum",
+            "Kereš, Dušan",
+            "John Smith Jr.",
+            "Imad Pasha",
+            "Plato",
+            "Euclid Collaboration",
+        ]
     )
     assert out == (
         "{van Dokkum}, Pieter and {Kereš}, Dušan and {Smith}, Jr., John "
-        "and {Pasha}, Imad and {Plato}"
+        "and {Pasha}, Imad and {Plato} and {Euclid Collaboration}"
     )
 
 

@@ -15,6 +15,8 @@ ROWS = [
     ("p4", "John Smith", "2024-01-01", "Smith:2024"),  # fine
     ("p5", "Jane Smith", "2024-06-01", "Smith:2024a"),  # fine, suffix must not move
     ("p6", "Bob Smith", "2024-09-01", "Smith:2024"),  # duplicate of p4
+    ("p7", "Euclid Collaboration", "2026-02-01", "Collaboration:2026"),  # bare group key
+    ("p8", "DESI Collaboration", "2026-03-01", "Collaboration:2026"),  # bare + duplicate
 ]
 
 
@@ -25,8 +27,17 @@ def _make_db(tmp_path):
     for pid, author, pub, key in ROWS:
         conn.execute(
             "INSERT INTO papers VALUES (?,?,?,?,?,?,?,?,?)",
-            (pid, None, None, pid, json.dumps([author]), pub, pub, key,
-             f"@ARTICLE{{{key},\n  title = {{T}}\n}}"),
+            (
+                pid,
+                None,
+                None,
+                pid,
+                json.dumps([author]),
+                pub,
+                pub,
+                key,
+                f"@ARTICLE{{{key},\n  title = {{T}}\n}}",
+            ),
         )
     conn.commit()
     conn.close()
@@ -59,6 +70,8 @@ def test_default_fixes_only_broken_and_duplicates(tmp_path):
         "p4": "Smith:2024",
         "p5": "Smith:2024a",
         "p6": "Smith:2024b",
+        "p7": "Euclid_Collaboration:2026",
+        "p8": "DESI_Collaboration:2026",
     }
     assert bib["p1"].startswith("@ARTICLE{van_Dokkum:2026,")
     assert list(tmp_path.glob("library.db.bak-*"))
@@ -67,6 +80,8 @@ def test_default_fixes_only_broken_and_duplicates(tmp_path):
         ("van Dokkum:2026", "van_Dokkum:2026"),
         ("Kereš:2005", "Keres:2005"),
         ("Smith:2024", "Smith:2024b"),
+        ("Collaboration:2026", "Euclid_Collaboration:2026"),
+        ("Collaboration:2026", "DESI_Collaboration:2026"),
     }
 
 
