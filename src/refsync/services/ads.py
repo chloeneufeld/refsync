@@ -222,7 +222,7 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
     client = ADSClient(api_key)
 
     # Get arXiv IDs
-    arxiv_ids = [p.arxiv_id for p in papers]
+    arxiv_ids = [p.arxiv_id for p in papers if p.arxiv_id]
 
     stats = {"synced": 0, "published": 0, "unchanged": 0, "not_found": 0, "errors": 0}
 
@@ -245,7 +245,7 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
                     stats["not_found"] += 1
                     # Still mark as synced even if not in ADS
                     await update_callback(
-                        paper.arxiv_id,
+                        paper.id,
                         {"last_citation_sync": datetime.utcnow().isoformat()},
                     )
                     continue
@@ -255,7 +255,7 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
                 bibtex = bibtex_map.get(bibcode)
 
                 updates = {
-                    "ads_bibcode": bibcode,
+                    "bibcode": bibcode,
                     "is_published": is_pub,
                     "last_citation_sync": datetime.utcnow().isoformat(),
                 }
@@ -290,7 +290,7 @@ async def sync_papers_with_ads(papers: list, update_callback) -> dict:
                     updates["bibtex"] = bibtex
                     updates["bibtex_source"] = "ads"
 
-                await update_callback(paper.arxiv_id, updates)
+                await update_callback(paper.id, updates)
 
                 stats["synced"] += 1
                 if is_pub:
